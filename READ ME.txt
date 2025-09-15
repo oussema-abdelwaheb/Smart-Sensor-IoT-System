@@ -1,0 +1,4 @@
+the project , based on esp-now communication , is composed of 4 esp32 boards and one esp01 board .
+one esp32 connected to an esp01 will act as a master-receiver for esp-now and mqtt publisher at the same time 
+the remaining boards will be our sensor-nodes/sensor-hubs , these boards will have sensors connected and they will read the sensors-data and send it via esp-now protocol to our master receiver.
+we could only test up to 3 sender-boards since we didnt have more , but theoretically it can support upto 20 paired peers at the same time , if we add encryption , we are limited to 17 paired peers, as for the practical limits , airtime/collisions become the real bottleneck as sender count rises (ESP-NOW default PHY is 1 Mbps; even small, frequent packets from many nodes will collide). Stagger transmissions (random backoff or time slots), keep payloads short, and lower send rates.

@@ -1,0 +1,60 @@
+#include <WiFi.h>
+#include <esp_now.h>
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <math.h>
+
+Adafruit_MPU6050 mpu;
+const int POT_PIN = 34;
+uint8_t wemosAddress[] = {0x3C,0x71,0xBF,0x70,0x6E,0x94};
+
+typedef struct { char msg[128]; } packet_t;
+packet_t outgoing;
+
+void onSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status){
+  Serial.print("WROOM32 send -> ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+}
+
+void setup(){
+  Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+
+  Wire.begin();
+  if (!mpu.begin()) { Serial.println("MPU6050 not found"); while(1) delay(10); }
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+
+  if (esp_now_init() != ESP_OK) { Serial.println("ESP-NOW init failed"); return; }
+  esp_now_register_send_cb(onSent);
+
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, wemosAddress, 6);
+  peer.channel = 0;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
+}
+
+static void computeAngles(float ax, float ay, float az, float &pitch, float &roll){
+  // Simple accel-only tilt estimate (degrees)
+  pitch = atan2f(ax, sqrtf(ay*ay + az*az)) * 180.0f / PI;
+  roll  = atan2f(ay, sqrtf(ax*ax + az*az)) * 180.0f / PI;
+}
+
+void loop(){
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+
+  int pot = analogRead(POT_PIN);
+  float pitch, roll;
+  computeAngles(a.acceleration.x, a.acceleration.y, a.acceleration.z, pitch, roll);
+
+  // As requested: acceleration on both axes (X,Y), plus angles and potentiometer
+  // Format: WROOM32,<pot>,<ax>,<ay>,<pitch>,<roll>
+  snprintf(outgoing.msg, sizeof(outgoing.msg), "WROOM32,%d,%.3f,%.3f,%.2f,%.2f",
+           pot, a.acceleration.x, a.acceleration.y, pitch, roll);
+
+  esp_now_send(wemosAddress, (uint8_t*)&outgoing, sizeof(outgoing));
+  delay(500);
+}

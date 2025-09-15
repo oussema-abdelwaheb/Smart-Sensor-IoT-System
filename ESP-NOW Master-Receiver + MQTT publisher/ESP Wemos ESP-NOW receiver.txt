@@ -1,0 +1,92 @@
+#include <WiFi.h>
+#include <esp_now.h>
+
+#define SERIAL_PC    Serial     // USB to PC
+#define SERIAL_ESP01 Serial2    // UART link to ESP-01
+#define RX2_PIN 16              // Wemos RX2  (connect to ESP-01 TX)
+#define TX2_PIN 17              // Wemos TX2  (connect to ESP-01 RX)
+
+uint8_t wemosMAC[] = {0x3C, 0x71, 0xBF, 0x70, 0x6E, 0x94};
+
+struct SenderTimestamp { String senderID; String lastPublish; };
+#define MAX_SENDERS 3
+SenderTimestamp lastTimestamps[MAX_SENDERS];
+
+char incomingMsg[160];
+
+// Correct ESP-NOW receive callback signature (new API)
+void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) {
+  int copyLen = min(len, (int)sizeof(incomingMsg) - 1);
+  memset(incomingMsg, 0, sizeof(incomingMsg));
+  memcpy(incomingMsg, incomingData, copyLen);
+
+  // Debug to PC and forward to ESP-01
+  SERIAL_PC.println(String("[ESP-NOW] ") + incomingMsg);
+  SERIAL_ESP01.println(incomingMsg);   // Forward raw CSV line to ESP-01
+}
+
+void setup() {
+  SERIAL_PC.begin(115200);
+  SERIAL_ESP01.begin(9600, SERIAL_8N1, RX2_PIN, TX2_PIN); // RX2=16, TX2=17
+
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+
+  if (esp_now_init() != ESP_OK) {
+    SERIAL_PC.println("ESP-NOW init failed");
+    ESP.restart();
+  }
+  esp_now_register_recv_cb(onDataRecv);
+
+  SERIAL_PC.println("Wemos Master ready (ESP-NOW recv, Serial2 bridge to ESP-01)");
+  SERIAL_PC.println("Wire: Wemos TX2(17)->ESP01 RX, Wemos RX2(16)<-ESP01 TX, GND shared, 3.3V power, ESP01 EN->3.3V");
+}
+
+void loop() {
+  // Read lines back from ESP-01: either "ID,YYYY-MM-DD HH:MM:SS" or "[ESP01 ...]" debug
+  while (SERIAL_ESP01.available()) {
+    String line = SERIAL_ESP01.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+
+    // Always show what we got from ESP-01
+    SERIAL_PC.println("[ESP-01->Wemos] " + line);
+
+    // Ignore debug lines (don’t try to parse them as timestamps)
+    if (line.length() && line.charAt(0) == '[') continue;
+
+    // Expect: SENDER_ID,YYYY-MM-DD HH:MM:SS
+    int commaIdx = line.indexOf(',');
+    if (commaIdx <= 0) continue;
+
+    String id = line.substring(0, commaIdx);  id.trim();
+    String ts = line.substring(commaIdx + 1); ts.trim();
+    if (!id.length() || !ts.length()) continue;
+
+    bool updated = false;
+    for (int i = 0; i < MAX_SENDERS; i++) {
+      if (lastTimestamps[i].senderID == id) {
+        lastTimestamps[i].lastPublish = ts;
+        updated = true;
+        break;
+      }
+    }
+    if (!updated) {
+      for (int i = 0; i < MAX_SENDERS; i++) {
+        if (lastTimestamps[i].senderID.length() == 0) {
+          lastTimestamps[i].senderID  = id;
+          lastTimestamps[i].lastPublish = ts;
+          break;
+        }
+      }
+    }
+
+    // Print table
+    SERIAL_PC.println("---- Last Publish Times ----");
+    for (int i = 0; i < MAX_SENDERS; i++) {
+      if (lastTimestamps[i].senderID.length())
+        SERIAL_PC.println(lastTimestamps[i].senderID + " -> " + lastTimestamps[i].lastPublish);
+    }
+    SERIAL_PC.println("----------------------------");
+  }
+}

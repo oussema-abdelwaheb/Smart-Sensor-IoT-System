@@ -1,0 +1,45 @@
+#include <WiFi.h>
+#include <esp_now.h>
+#include <Adafruit_NeoPixel.h>
+
+#define NEOPIXEL_PIN 8
+Adafruit_NeoPixel pixels(1, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
+uint8_t wemosAddress[] = {0x3C,0x71,0xBF,0x70,0x6E,0x94};
+
+typedef struct { char msg[64]; } packet_t;
+packet_t outgoing;
+int counter = 0;
+
+void onSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status){
+  pixels.setPixelColor(0, status==ESP_NOW_SEND_SUCCESS ? pixels.Color(0,255,0) : pixels.Color(255,0,0));
+  pixels.show();
+  Serial.print("C3 send -> ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+}
+
+void setup(){
+  Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+
+  pixels.begin();
+  pixels.setBrightness(40);
+  pixels.setPixelColor(0, pixels.Color(0,0,40));
+  pixels.show();
+
+  if (esp_now_init() != ESP_OK) { Serial.println("ESP-NOW init failed"); return; }
+  esp_now_register_send_cb(onSent);
+
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, wemosAddress, 6);
+  peer.channel = 0;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
+}
+
+void loop(){
+  counter++;
+  snprintf(outgoing.msg, sizeof(outgoing.msg), "C3,%d", counter);
+  esp_now_send(wemosAddress, (uint8_t*)&outgoing, sizeof(outgoing));
+  delay(1000);
+}

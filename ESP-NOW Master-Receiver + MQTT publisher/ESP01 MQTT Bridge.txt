@@ -1,0 +1,96 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <time.h>
+
+const char* WIFI_SSID = "YOUR_WIFI";
+const char* WIFI_PASS = "YOUR_PASS";
+const char* MQTT_HOST = "192.168.1.100"; // change to your broker
+const uint16_t MQTT_PORT = 1883;
+
+// NTP (UTC+1 = 3600 seconds). West/Central Africa (no DST assumed).
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 3600 /*UTC+1*/, 60000);
+
+WiFiClient net;
+PubSubClient mqtt(net);
+
+// Format epoch to "YYYY-MM-DD HH:MM:SS"
+String formatDateTime(time_t t){
+  struct tm *tm_info = localtime(&t);
+  char buf[20];
+  // guard for null (shouldn't happen, but safe)
+  if(!tm_info){ return String("1970-01-01 00:00:00"); }
+  strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
+  return String(buf);
+}
+
+void sendDebug(const String& s){
+  // This goes back to Wemos; Wemos will print but ignore for timestamp table
+  Serial.println("[ESP01 DEBUG] " + s);
+}
+
+void connectWiFi(){
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  sendDebug("WiFi connecting...");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println(); // newline after dots
+  sendDebug("WiFi connected, IP=" + WiFi.localIP().toString());
+}
+
+void connectMQTT(){
+  while (!mqtt.connected()){
+    sendDebug("Connecting to MQTT...");
+    if (mqtt.connect("ESP01_MQTT_Bridge")){
+      sendDebug("MQTT connected");
+    } else {
+      sendDebug("MQTT failed rc=" + String(mqtt.state()) + " retrying...");
+      delay(1500);
+    }
+  }
+}
+
+void setup(){
+  Serial.begin(9600);   // link to Wemos Serial2
+  delay(50);
+  sendDebug("Boot");
+  connectWiFi();
+  mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  timeClient.begin();
+}
+
+void loop(){
+  if (!mqtt.connected()) connectMQTT();
+  mqtt.loop();
+  timeClient.update();
+
+  while (Serial.available()){
+    String line = Serial.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+
+    // Expect sender CSV lines like:
+    // TYPEC,<count>
+    // C3,<count>
+    // WROOM32,<pot>,<ax>,<ay>,<pitch>,<roll>
+    int comma = line.indexOf(',');
+    String sender = (comma > 0) ? line.substring(0, comma) : String("UNKNOWN");
+    sender.trim();
+
+    // Timestamp
+    time_t epoch = timeClient.getEpochTime();
+    String ts = formatDateTime(epoch);
+
+    // Publish to mqtt topic "espnow/<sender>"
+    String topic = "espnow/" + sender;
+    String payload = line + "," + ts; // append timestamp to payload
+
+    bool ok = mqtt.publish(topic.c_str(), payload.c_str());
+    sendDebug(String("Publish ") + (ok ? "OK" : "FAIL") + " -> " + topic + " : " + payload);
+
+    // Send compact "ID,timestamp" back to Wemos for table (NO [ESP01 DEBUG] prefix)
+    Serial.println(sender + "," + ts);
+  }
+}
